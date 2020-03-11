@@ -232,6 +232,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 			})
 			validateBPFTunnelMap()
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test with IPsec between nodes failed")
+			Expect(testPodConnectivityAcrossNodesMTUEncap(kubectl)).Should(BeTrue(), "Connectivity test with IPsec max MTU between nodes failed")
 		}, 600)
 
 		It("Check connectivity with sockops and VXLAN encapsulation", func() {
@@ -410,6 +411,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 				"global.encryption.interface": privateIface,
 			})
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
+			Expect(testPodConnectivityAcrossNodesMTU(kubectl)).Should(BeTrue(), "Connectivity test with IPsec max MTU between nodes failed")
 		})
 	})
 
@@ -444,13 +446,23 @@ var _ = Describe("K8sDatapathConfig", func() {
 	})
 })
 
+func testPodConnectivityAcrossNodesMTU(kubectl *helpers.Kubectl) bool {
+	result, _ := testPodConnectivityAndReturnIP(kubectl, true, 1, 1422)
+	return result
+}
+
+func testPodConnectivityAcrossNodesMTUEncap(kubectl *helpers.Kubectl) bool {
+	result, _ := testPodConnectivityAndReturnIP(kubectl, true, 1, 1372)
+	return result
+}
+
 func testPodConnectivityAcrossNodes(kubectl *helpers.Kubectl) bool {
-	result, _ := testPodConnectivityAndReturnIP(kubectl, true, 1)
+	result, _ := testPodConnectivityAndReturnIP(kubectl, true, 1, 0)
 	return result
 }
 
 func testPodConnectivitySameNodes(kubectl *helpers.Kubectl) bool {
-	result, _ := testPodConnectivityAndReturnIP(kubectl, false, 1)
+	result, _ := testPodConnectivityAndReturnIP(kubectl, false, 1, 0)
 	return result
 }
 
@@ -504,7 +516,9 @@ func fetchPodsWithOffset(kubectl *helpers.Kubectl, name, filter, hostIPAntiAffin
 	return targetPod, targetPodJSON
 }
 
-func testPodConnectivityAndReturnIP(kubectl *helpers.Kubectl, requireMultiNode bool, callOffset int) (bool, string) {
+func testPodConnectivityAndReturnIP(kubectl *helpers.Kubectl, requireMultiNode bool, callOffset, mtu int) (bool, string) {
+	var res *helpers.CmdRes
+
 	callOffset++
 
 	By("Checking pod connectivity between nodes")
@@ -518,10 +532,18 @@ func testPodConnectivityAndReturnIP(kubectl *helpers.Kubectl, requireMultiNode b
 	ExpectWithOffset(callOffset, err).Should(BeNil(), "Failure to retrieve IP of pod %s", dstPod)
 	targetIP := podIP.String()
 
-	// ICMP connectivity test
-	res := kubectl.ExecPodCmd(helpers.DefaultNamespace, srcPod, helpers.Ping(targetIP))
-	if !res.WasSuccessful() {
-		return false, targetIP
+	if mtu != 0 {
+		// ICMP connectivity test
+		res = kubectl.ExecPodCmd(helpers.DefaultNamespace, srcPod, helpers.Ping(targetIP+" -s "+string(mtu)))
+		if !res.WasSuccessful() {
+			return false, targetIP
+		}
+	} else {
+		// ICMP connectivity test
+		res = kubectl.ExecPodCmd(helpers.DefaultNamespace, srcPod, helpers.Ping(targetIP))
+		if !res.WasSuccessful() {
+			return false, targetIP
+		}
 	}
 
 	// HTTP connectivity test
@@ -592,7 +614,7 @@ func monitorConnectivityAcrossNodes(kubectl *helpers.Kubectl, monitorLog string)
 
 	By(fmt.Sprintf("Launching cilium monitor on %q", ciliumPodK8s1))
 	monitorStop := kubectl.MonitorStart(helpers.CiliumNamespace, ciliumPodK8s1, monitorLog)
-	result, targetIP := testPodConnectivityAndReturnIP(kubectl, requireMultiNode, 2)
+	result, targetIP := testPodConnectivityAndReturnIP(kubectl, requireMultiNode, 2, 0)
 	monitorStop()
 	ExpectWithOffset(1, result).Should(BeTrue(), "Connectivity test between nodes failed")
 
